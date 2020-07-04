@@ -76,8 +76,8 @@ class NAF(nn.Module):
         #dist = Normal(action_value.squeeze(-1), 1)
         action = dist.sample()
         action = torch.clamp(action, min=-1, max=1)
-        wandb.log({"Action Noise": action.detach().cpu().numpy() - action_value.squeeze(-1).detach().cpu().numpy()})
-        #action = action_value.squeeze(-1)
+        #wandb.log({"Action Noise": action.detach().cpu().numpy() - action_value.squeeze(-1).detach().cpu().numpy()})
+
         
         return action, Q, V
     
@@ -214,7 +214,7 @@ class DQN_Agent():
                     loss = self.learn(experiences)
                     self.Q_updates += 1
                     Q_losses.append(loss)
-                wandb.log({"Q_loss": np.mean(Q_losses)})
+                #wandb.log({"Q_loss": np.mean(Q_losses), "Optimization step": self.Q_updates})
 
 
     def act(self, state):
@@ -310,7 +310,7 @@ def run(frames=1000):
         if done:
             scores_window.append(score)       # save most recent score
             scores.append(score)              # save most recent score
-            wandb.log({"Reward": score, "Average100": np.mean(scores_window)})
+            wandb.log({"Reward": score, "Average100": np.mean(scores_window), "Step": frame})
 
             print('\rEpisode {}\tFrame {} \tAverage Score: {:.2f}'.format(i_episode, frame, np.mean(scores_window)), end="")
             if i_episode % 100 == 0:
