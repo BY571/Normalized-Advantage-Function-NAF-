@@ -63,12 +63,12 @@ class NAF(nn.Module):
         P = L*L.transpose(2, 1)
         
         Q = None
-        if action is not None:
+        if action is not None:  
 
             # calculate Advantage:
-            A = (-0.5 * (action.unsqueeze(-1) - action_value).transpose(2, 1) * P * (action.unsqueeze(-1) - action_value)).squeeze(-1)
+            A = (-0.5 * torch.matmul(torch.matmul((action.unsqueeze(-1) - action_value).transpose(2, 1), P), (action.unsqueeze(-1) - action_value))).squeeze(-1)
 
-            Q = A + V
+            Q = A + V   
         
         
         # add noise to action mu:
@@ -234,7 +234,7 @@ class DQN_Agent():
             #action = action.cpu().squeeze().numpy() + self.noise.sample()
             #action = np.clip(action, -1,1)[0]
         self.qnetwork_local.train()
-        return action.cpu().squeeze().numpy()
+        return action.cpu().squeeze().numpy().reshape((self.action_size,))
 
 
 
@@ -301,7 +301,7 @@ def run(frames=1000):
     for frame in range(1, frames+1):
         action = agent.act(state)
 
-        next_state, reward, done, _ = env.step(np.array([action]))
+        next_state, reward, done, _ = env.step(action)
         agent.step(state, action, reward, next_state, done)
 
         state = next_state
