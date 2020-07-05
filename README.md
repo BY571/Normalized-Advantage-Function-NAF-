@@ -33,7 +33,7 @@ To verify and support their statement I tested NAF on Pendulum-v0 and LunarLande
 
 ![alttext](/imgs/NAF_vs_DDPG.png)
 
-![alttext](/imgs/NAF_vs_DDPG_LL.png)
+![alttext](/imgs/NAF_vs_DDPG_LL_.png)
 
 Indeed the results show a faster and more stable learning!
 
