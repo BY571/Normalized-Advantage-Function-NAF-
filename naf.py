@@ -85,7 +85,7 @@ class NAF(nn.Module):
 class ReplayBuffer:
     """Fixed-size buffer to store experience tuples."""
 
-    def __init__(self, buffer_size, batch_size, device, seed, gamma):
+    def __init__(self, buffer_size, batch_size, device, seed, gamma, nstep):
         """Initialize a ReplayBuffer object.
         Params
         ======
@@ -99,14 +99,14 @@ class ReplayBuffer:
         self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done"])
         self.seed = random.seed(seed)
         self.gamma = gamma
-
-        self.n_step_buffer = deque(maxlen=1)
+        self.n_step = nstep
+        self.n_step_buffer = deque(maxlen=nstep)
     
     def add(self, state, action, reward, next_state, done):
         """Add a new experience to memory."""
 
         self.n_step_buffer.append((state, action, reward, next_state, done))
-        if len(self.n_step_buffer) == 1:
+        if len(self.n_step_buffer) == self.n_step:
             state, action, reward, next_state, done = self.calc_multistep_return()
 
             e = self.experience(state, action, reward, next_state, done)
@@ -137,6 +137,100 @@ class ReplayBuffer:
         """Return the current size of internal memory."""
         return len(self.memory)
 
+class PrioritizedReplay(object):
+    """
+    Proportional Prioritization
+    """
+    def __init__(self, capacity, batch_size, seed, gamma=0.99, n_step=1, alpha=0.6, beta_start = 0.4, beta_frames=100000):
+        self.alpha = alpha
+        self.beta_start = beta_start
+        self.beta_frames = beta_frames
+        self.frame = 1 #for beta calculation
+        self.batch_size = batch_size
+        self.capacity   = capacity
+        self.buffer     = []
+        self.pos        = 0
+        self.priorities = np.zeros((capacity,), dtype=np.float32)
+        self.seed = np.random.seed(seed)
+        self.n_step = n_step
+        self.n_step_buffer = deque(maxlen=self.n_step)
+        self.gamma = gamma
+
+    def calc_multistep_return(self):
+        Return = 0
+        for idx in range(self.n_step):
+            Return += self.gamma**idx * self.n_step_buffer[idx][2]
+        
+        return self.n_step_buffer[0][0], self.n_step_buffer[0][1], Return, self.n_step_buffer[-1][3], self.n_step_buffer[-1][4]
+    
+    def beta_by_frame(self, frame_idx):
+        """
+        Linearly increases beta from beta_start to 1 over time from 1 to beta_frames.
+        
+        3.4 ANNEALING THE BIAS (Paper: PER)
+        We therefore exploit the flexibility of annealing the amount of importance-sampling
+        correction over time, by defining a schedule on the exponent 
+        that reaches 1 only at the end of learning. In practice, we linearly anneal from its initial value 0 to 1
+        """
+        return min(1.0, self.beta_start + frame_idx * (1.0 - self.beta_start) / self.beta_frames)
+    
+    def add(self, state, action, reward, next_state, done):
+        assert state.ndim == next_state.ndim
+        state      = np.expand_dims(state, 0)
+        next_state = np.expand_dims(next_state, 0)
+        
+        # n_step calc
+        self.n_step_buffer.append((state, action, reward, next_state, done))
+        if len(self.n_step_buffer) == self.n_step:
+            state, action, reward, next_state, done = self.calc_multistep_return()
+
+        max_prio = self.priorities.max() if self.buffer else 1.0 # gives max priority if buffer is not empty else 1
+
+        if len(self.buffer) < self.capacity:
+            self.buffer.append((state, action, reward, next_state, done))
+        else:
+            # puts the new data on the position of the oldes since it circles via pos variable
+            # since if len(buffer) == capacity -> pos == 0 -> oldest memory (at least for the first round?) 
+            self.buffer[self.pos] = (state, action, reward, next_state, done) 
+        
+        self.priorities[self.pos] = max_prio
+        self.pos = (self.pos + 1) % self.capacity # lets the pos circle in the ranges of capacity if pos+1 > cap --> new posi = 0
+    
+    def sample(self):
+        N = len(self.buffer)
+        if N == self.capacity:
+            prios = self.priorities
+        else:
+            prios = self.priorities[:self.pos]
+            
+        # calc P = p^a/sum(p^a)
+        probs  = prios ** self.alpha
+        P = probs/probs.sum()
+        
+        #gets the indices depending on the probability p
+        indices = np.random.choice(N, self.batch_size, p=P) 
+        samples = [self.buffer[idx] for idx in indices]
+        
+        beta = self.beta_by_frame(self.frame)
+        self.frame+=1
+                
+        #Compute importance-sampling weight
+        weights  = (N * P[indices]) ** (-beta)
+        # normalize weights
+        weights /= weights.max() 
+        weights  = np.array(weights, dtype=np.float32) 
+        
+        states, actions, rewards, next_states, dones = zip(*samples) 
+        return np.concatenate(states), actions, rewards, np.concatenate(next_states), dones, indices, weights
+    
+    def update_priorities(self, batch_indices, batch_priorities):
+        for idx, prio in zip(batch_indices, batch_priorities):
+            self.priorities[idx] = prio 
+
+    def __len__(self):
+        return len(self.buffer)
+
+
 
 class DQN_Agent():
     """Interacts with and learns from the environment."""
@@ -147,7 +241,9 @@ class DQN_Agent():
                  layer_size,
                  BATCH_SIZE,
                  BUFFER_SIZE,
+                 PER,
                  LR,
+                 Nstep,
                  TAU,
                  GAMMA,
                  UPDATE_EVERY,
@@ -177,11 +273,12 @@ class DQN_Agent():
         self.device = device
         self.TAU = TAU
         self.GAMMA = GAMMA
+        self.nstep = Nstep
         self.UPDATE_EVERY = UPDATE_EVERY
         self.NUPDATES = NUPDATES
         self.BATCH_SIZE = BATCH_SIZE
         self.Q_updates = 0
-
+        self.per = PER
 
         self.action_step = 4
         self.last_action = None
@@ -194,7 +291,12 @@ class DQN_Agent():
         print(self.qnetwork_local)
         
         # Replay memory
-        self.memory = ReplayBuffer(BUFFER_SIZE, BATCH_SIZE, self.device, seed, self.GAMMA)
+        if PER == True:
+            print("Using Prioritized Experience Replay")
+            self.memory = PrioritizedReplay(BUFFER_SIZE, BATCH_SIZE, seed, n_step=self.nstep)
+        else:
+            print("Using Regular Experience Replay")
+            self.memory = ReplayBuffer(BUFFER_SIZE, BATCH_SIZE, self.device, seed, self.GAMMA, self.nstep)
         
         # Initialize time step (for updating every UPDATE_EVERY steps)
         self.t_step = 0 
@@ -211,7 +313,10 @@ class DQN_Agent():
                 Q_losses = []
                 for _ in range(self.NUPDATES):
                     experiences = self.memory.sample()
-                    loss = self.learn(experiences)
+                    if self.per == True:
+                        loss = self.learn_per(experiences)
+                    else:
+                        loss = self.learn(experiences)
                     self.Q_updates += 1
                     Q_losses.append(loss)
                 #wandb.log({"Q_loss": np.mean(Q_losses), "Optimization step": self.Q_updates})
@@ -252,7 +357,7 @@ class DQN_Agent():
             _, _, V_ = self.qnetwork_target(next_states)
 
         # Compute Q targets for current states 
-        V_targets = rewards + (self.GAMMA * V_ * (1 - dones))
+        V_targets = rewards + (self.GAMMA**self.nstep * V_ * (1 - dones))
         
         # Get expected Q values from local model
         _, Q, _ = self.qnetwork_local(states, actions)
@@ -270,7 +375,49 @@ class DQN_Agent():
         
 
         
-        return loss.detach().cpu().numpy()            
+        return loss.detach().cpu().numpy()
+
+    def learn_per(self, experiences):
+        """Update value parameters using given batch of experience tuples.
+        Params
+        ======
+            experiences (Tuple[torch.Tensor]): tuple of (s, a, r, s', done) tuples 
+        """
+        self.optimizer.zero_grad()
+        states, actions, rewards, next_states, dones, idx, weights = experiences
+
+        states = torch.FloatTensor(states).to(self.device)
+        next_states = torch.FloatTensor(np.float32(next_states)).to(self.device)
+        actions = torch.LongTensor(actions).to(self.device)
+        rewards = torch.FloatTensor(rewards).to(self.device).unsqueeze(1) 
+        dones = torch.FloatTensor(dones).to(self.device).unsqueeze(1)
+        weights = torch.FloatTensor(weights).unsqueeze(1).to(self.device)
+        
+        # get the Value for the next state from target model
+        with torch.no_grad():
+            _, _, V_ = self.qnetwork_target(next_states)
+
+        # Compute Q targets for current states 
+        V_targets = rewards + (self.GAMMA**self.nstep * V_ * (1 - dones))
+        
+        # Get expected Q values from local model
+        _, Q, _ = self.qnetwork_local(states, actions)
+
+        # Compute loss
+        td_error = V_targets - Q
+        loss = (td_error.pow(2)*weights).mean().to(self.device)
+        # Minimize the loss
+        loss.backward()
+        clip_grad_norm_(self.qnetwork_local.parameters(),1)
+        self.optimizer.step()
+
+        # ------------------- update target network ------------------- #
+        self.soft_update(self.qnetwork_local, self.qnetwork_target)
+        # update per priorities
+        self.memory.update_priorities(idx, abs(td_error.data.cpu().numpy()))
+
+        
+        return loss.detach().cpu().numpy()       
 
     def soft_update(self, local_model, target_model):
         """Soft update model parameters.
@@ -331,28 +478,34 @@ if __name__ == "__main__":
                      help='Number of training frames (default: 40000)')    
     parser.add_argument('-mem', type=int, default=100000,
                      help='Replay buffer size (default: 100000)')
+    parser.add_argument('-per', type=int, choices=[0,1],  default=0,
+                     help='Use prioritized experience replay (default: False)')
     parser.add_argument('-b', "--batch_size", type=int, default=128,
                      help='Batch size (default: 128)')
+    parser.add_argument('-nstep', type=int, default=1,
+                     help='nstep_bootstrapping (default: 1)')
     parser.add_argument('-l', "--layer_size", type=int, default=256,
                      help='Neural Network layer size (default: 256)')
     parser.add_argument('-g', "--gamma", type=float, default=0.99,
                      help='Discount factor gamma (default: 0.99)')
-    parser.add_argument('-t', "--tau", type=float, default=1e-3,
-                     help='Soft update factor tau (default: 1e-3)')
+    parser.add_argument('-t', "--tau", type=float, default=1e-2,
+                     help='Soft update factor tau (default: 1e-2)')
     parser.add_argument('-lr', "--learning_rate", type=float, default=1e-3,
                      help='Learning rate (default: 1e-3)')
     parser.add_argument('-u', "--update_every", type=int, default=1,
                      help='update the network every x step (default: 1)')
-    parser.add_argument('-n_up', "--n_updates", type=int, default=1,
-                     help='update the network for x steps (default: 1)')
+    parser.add_argument('-n_up', "--n_updates", type=int, default=3 ,
+                     help='update the network for x steps (default: 3)')
     parser.add_argument('-s', "--seed", type=int, default=0,
                      help='random seed (default: 0)')
     args = parser.parse_args()
     wandb.config.update(args)
     seed = args.seed
     BUFFER_SIZE = args.mem
+    per = args.per
     BATCH_SIZE = args.batch_size
     LAYER_SIZE = args.layer_size
+    nstep = args.nstep
     GAMMA = args.gamma
     TAU = args.tau
     LR = args.learning_rate
@@ -360,7 +513,6 @@ if __name__ == "__main__":
     NUPDATES = args.n_updates
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print("Using ", device)
-
 
     np.random.seed(seed)
     env = gym.make(args.env) #CartPoleConti
@@ -374,8 +526,10 @@ if __name__ == "__main__":
                         action_size=action_size,
                         layer_size=LAYER_SIZE,
                         BATCH_SIZE=BATCH_SIZE, 
-                        BUFFER_SIZE=BUFFER_SIZE, 
-                        LR=LR, 
+                        BUFFER_SIZE=BUFFER_SIZE,
+                        PER=per, 
+                        LR=LR,
+                        Nstep=nstep, 
                         TAU=TAU, 
                         GAMMA=GAMMA, 
                         UPDATE_EVERY=UPDATE_EVERY,
