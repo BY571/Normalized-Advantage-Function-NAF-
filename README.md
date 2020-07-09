@@ -6,6 +6,8 @@ Two versions are implemented:
 1. Jupyter notebook version
 2. Script version (results tracking with [wandb](www.wandb.com))
 
+### Recently added PER and n-step method
+
 To run the script version: `python naf.py` 
 
 with the arguments:
@@ -21,6 +23,9 @@ with the arguments:
     '-u', --update_every : update the network every x step (default: 1)
     '-n_up', --n_updates : update the network for x steps (default: 1)
     '-s', --seed : random seed (default: 0)
+    '-per', choices=[0,1] : Use prioritized experience replay (default: 0)
+    '-nstep' : nstep_bootstrapping (default: 1)
+
 
 
 ![alttext](/imgs/NAF.png)
@@ -37,10 +42,6 @@ To verify and support their statement I tested NAF on Pendulum-v0 and LunarLande
 
 Indeed the results show a faster and more stable learning!
 
-### TODO:
-Apply some advancements for Q-learning to improve performance even more. For example:
-- N-step
-- PER
 
 Feel free to use this code for your own projects or research:
 
