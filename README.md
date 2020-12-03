@@ -1,3 +1,4 @@
+
 # Normalized Advantage Function (NAF)
 
 PyTorch implementation of the NAF algorithm based on the paper: [Continuous Deep Q-Learning with Model-based Acceleration](https://arxiv.org/abs/1603.00748).
@@ -13,6 +14,7 @@ To run the script version: `python naf.py`
 with the arguments:
 
     '-env' : Name of the environment (default: Pendulum-v0)
+    '-info' : Name of the Experiment (default: Experiment-1)
     '-f', --frames : Number of training frames (default: 40000)   
     '-mem' : Replay buffer size (default: 100000)
     '-b', --batch_size : Batch size (default: 128)
@@ -25,6 +27,9 @@ with the arguments:
     '-s', --seed : random seed (default: 0)
     '-per', choices=[0,1] : Use prioritized experience replay (default: 0)
     '-nstep' : nstep_bootstrapping (default: 1)
+    '-d2rl': Using Deep Dense Network if set to 1 (default: 0)
+    '--eval_every': Doing an evaluation of the current policy every X frames (default: 1000)
+    '--eval_runs': Number of evaluation runs - performance is averaged over all runs (default: 3)
 
 
 

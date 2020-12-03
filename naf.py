@@ -16,7 +16,78 @@ import copy
 from torch.distributions import MultivariateNormal, Normal
 import argparse
 import wandb
-wandb.init(project="naf")
+
+
+class DeepNAF(nn.Module):
+    def __init__(self, state_size, action_size,layer_size, seed):
+        super(DeepNAF, self).__init__()
+        self.seed = torch.manual_seed(seed)
+        self.input_shape = state_size
+        self.action_size = action_size
+        
+        concat_size = state_size+layer_size
+
+        self.fc1 = nn.Linear(self.input_shape, layer_size)
+        self.bn1 = nn.BatchNorm1d(layer_size)
+        self.fc2 = nn.Linear(concat_size, layer_size)
+        self.bn2 = nn.BatchNorm1d(layer_size)
+        self.fc3 = nn.Linear(concat_size, layer_size)
+        self.bn3 = nn.BatchNorm1d(layer_size)
+        self.fc4 = nn.Linear(concat_size, layer_size)
+        self.bn4 = nn.BatchNorm1d(layer_size)
+        self.action_values = nn.Linear(layer_size, action_size)
+        self.value = nn.Linear(layer_size, 1)
+        self.matrix_entries = nn.Linear(layer_size, int(self.action_size*(self.action_size+1)/2))
+    
+    def forward(self, input_, action=None):
+        """
+        
+        """
+
+        x = torch.relu(self.fc1(input_))
+        x = self.bn1(x)
+        x = torch.relu(self.fc2(torch.cat([x, input_],dim=1)))
+        x = self.bn2(x)
+        x = torch.relu(self.fc3(torch.cat([x, input_],dim=1)))
+        x = self.bn3(x)
+        x = torch.relu(self.fc4(torch.cat([x, input_],dim=1)))
+
+        action_value = torch.tanh(self.action_values(x))
+        entries = torch.tanh(self.matrix_entries(x))
+        V = self.value(x)
+        
+        action_value = action_value.unsqueeze(-1)
+        
+        # create lower-triangular matrix
+        L = torch.zeros((input_.shape[0], self.action_size, self.action_size)).to(device)
+
+        # get lower triagular indices
+        tril_indices = torch.tril_indices(row=self.action_size, col=self.action_size, offset=0)  
+
+        # fill matrix with entries
+        L[:, tril_indices[0], tril_indices[1]] = entries
+        L.diagonal(dim1=1,dim2=2).exp_()
+
+        # calculate state-dependent, positive-definite square matrix
+        P = L*L.transpose(2, 1)
+        
+        Q = None
+        if action is not None:  
+
+            # calculate Advantage:
+            A = (-0.5 * torch.matmul(torch.matmul((action.unsqueeze(-1) - action_value).transpose(2, 1), P), (action.unsqueeze(-1) - action_value))).squeeze(-1)
+
+            Q = A + V   
+        
+        
+        # add noise to action mu:
+        dist = MultivariateNormal(action_value.squeeze(-1), torch.inverse(P))
+        #dist = Normal(action_value.squeeze(-1), 1)
+        action = dist.sample()
+        action = torch.clamp(action, min=-1, max=1)
+        #wandb.log({"Action Noise": action.detach().cpu().numpy() - action_value.squeeze(-1).detach().cpu().numpy()})
+
+        return action, Q, V
 
 class NAF(nn.Module):
     def __init__(self, state_size, action_size,layer_size, seed):
@@ -244,6 +315,7 @@ class DQN_Agent():
                  PER,
                  LR,
                  Nstep,
+                 D2RL,
                  TAU,
                  GAMMA,
                  UPDATE_EVERY,
@@ -284,8 +356,13 @@ class DQN_Agent():
         self.last_action = None
 
         # Q-Network
-        self.qnetwork_local = NAF(state_size, action_size,layer_size, seed).to(device)
-        self.qnetwork_target = NAF(state_size, action_size,layer_size, seed).to(device)
+        if D2RL == 0:
+            self.qnetwork_local = NAF(state_size, action_size,layer_size, seed).to(device)
+            self.qnetwork_target = NAF(state_size, action_size,layer_size, seed).to(device)
+        else:
+            self.qnetwork_local = DeepNAF(state_size, action_size,layer_size, seed).to(device)
+            self.qnetwork_target = DeepNAF(state_size, action_size,layer_size, seed).to(device)
+        
         wandb.watch(self.qnetwork_local)
         self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=LR)
         print(self.qnetwork_local)
@@ -404,7 +481,7 @@ class DQN_Agent():
         _, Q, _ = self.qnetwork_local(states, actions)
 
         # Compute loss
-        td_error = V_targets - Q
+        td_error = Q - V_targets# - Q
         loss = (td_error.pow(2)*weights).mean().to(self.device)
         # Minimize the loss
         loss.backward()
@@ -432,6 +509,24 @@ class DQN_Agent():
             target_param.data.copy_(self.TAU*local_param.data + (1.0-self.TAU)*target_param.data)
 
 
+def evaluate(frame):
+    scores = []
+    with torch.no_grad():
+        for i in range(Eval_runs):
+            state = test_env.reset()    
+            score = 0
+            done = 0
+            while not done:
+                action = agent.act(state)
+                state, reward, done, _ = test_env.step(action)
+                score += reward
+                if done:
+                    scores.append(score)
+                    break
+
+    wandb.log({"Reward": np.mean(scores), "Step": frame})
+
+
 def run(frames=1000):
     """"NAF.
     
@@ -444,7 +539,8 @@ def run(frames=1000):
     frame = 0
     i_episode = 0
     state = env.reset()
-    score = 0                  
+    score = 0 
+    evaluate(0)                 
     for frame in range(1, frames+1):
         action = agent.act(state)
 
@@ -454,11 +550,12 @@ def run(frames=1000):
         state = next_state
         score += reward
 
+        if frame % Eval_every == 0:
+            evaluate(frame)
+
         if done:
             scores_window.append(score)       # save most recent score
             scores.append(score)              # save most recent score
-            wandb.log({"Reward": score, "Average100": np.mean(scores_window), "Step": frame})
-
             print('\rEpisode {}\tFrame {} \tAverage Score: {:.2f}'.format(i_episode, frame, np.mean(scores_window)), end="")
             if i_episode % 100 == 0:
                 print('\rEpisode {}\tFrame {}\tAverage Score: {:.2f}'.format(i_episode,frame, np.mean(scores_window)))
@@ -466,16 +563,21 @@ def run(frames=1000):
             state = env.reset()
             score = 0              
 
-    return np.mean(scores_window)
 
 
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()
+    parser.add_argument("-info", type=str, default="Experiment-1",
+                     help="Name of the Experiment (default: Experiment-1)")
     parser.add_argument('-env', type=str, default="Pendulum-v0",
                      help='Name of the environment (default: Pendulum-v0)')
     parser.add_argument('-f', "--frames", type=int, default=40000,
                      help='Number of training frames (default: 40000)')    
+    parser.add_argument("--eval_every", type=int, default=1000,
+                     help="Evaluate the current policy every X steps (default: 1000)")
+    parser.add_argument("--eval_runs", type=int, default=3,
+                     help="Number of evaluation runs to evaluate - averating the evaluation Performance over all runs (default: 3)")
     parser.add_argument('-mem', type=int, default=100000,
                      help='Replay buffer size (default: 100000)')
     parser.add_argument('-per', type=int, choices=[0,1],  default=0,
@@ -484,21 +586,24 @@ if __name__ == "__main__":
                      help='Batch size (default: 128)')
     parser.add_argument('-nstep', type=int, default=1,
                      help='nstep_bootstrapping (default: 1)')
+    parser.add_argument("-d2rl", type=int, choices=[0,1], default=0,
+                     help="Using D2RL Deep Dense NN Architecture if set to 1 (default: 0)")
     parser.add_argument('-l', "--layer_size", type=int, default=256,
                      help='Neural Network layer size (default: 256)')
     parser.add_argument('-g', "--gamma", type=float, default=0.99,
                      help='Discount factor gamma (default: 0.99)')
-    parser.add_argument('-t', "--tau", type=float, default=1e-2,
-                     help='Soft update factor tau (default: 1e-2)')
+    parser.add_argument('-t', "--tau", type=float, default=0.01,
+                     help='Soft update factor tau (default: 0.01)')
     parser.add_argument('-lr', "--learning_rate", type=float, default=1e-3,
                      help='Learning rate (default: 1e-3)')
     parser.add_argument('-u', "--update_every", type=int, default=1,
                      help='update the network every x step (default: 1)')
-    parser.add_argument('-n_up', "--n_updates", type=int, default=3 ,
+    parser.add_argument('-n_up', "--n_updates", type=int, default=3,
                      help='update the network for x steps (default: 3)')
     parser.add_argument('-s', "--seed", type=int, default=0,
                      help='random seed (default: 0)')
     args = parser.parse_args()
+    wandb.init(project="naf", name=args.info)
     wandb.config.update(args)
     seed = args.seed
     BUFFER_SIZE = args.mem
@@ -511,14 +616,18 @@ if __name__ == "__main__":
     LR = args.learning_rate
     UPDATE_EVERY = args.update_every
     NUPDATES = args.n_updates
+    Eval_every = args.eval_every
+    Eval_runs = args.eval_runs
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print("Using ", device)
 
     np.random.seed(seed)
     env = gym.make(args.env) #CartPoleConti
+    test_env = gym.make(args.env)
 
 
     env.seed(seed)
+    test_env.seed(seed+1)
     action_size     = env.action_space.shape[0]
     state_size = env.observation_space.shape[0]
 
@@ -530,6 +639,7 @@ if __name__ == "__main__":
                         PER=per, 
                         LR=LR,
                         Nstep=nstep, 
+                        D2RL=args.d2rl,
                         TAU=TAU, 
                         GAMMA=GAMMA, 
                         UPDATE_EVERY=UPDATE_EVERY,
@@ -540,7 +650,7 @@ if __name__ == "__main__":
 
 
     t0 = time.time()
-    final_average100 = run(frames = args.frames)
+    run(frames = args.frames)
     t1 = time.time()
     
     print("Training time: {}min".format(round((t1-t0)/60,2)))
