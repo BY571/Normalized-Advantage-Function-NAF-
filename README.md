@@ -47,6 +47,12 @@ To verify and support their statement I tested NAF on Pendulum-v0 and LunarLande
 
 Indeed the results show a faster and more stable learning!
 
+## TODO:
+- Test with Double Q-nets like SAC
+- Test with Entropy Regularization (like sac)
+- Test with REDQ Q-Net ensemble
+
+
 
 Feel free to use this code for your own projects or research:
 
