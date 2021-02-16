@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-
+import json 
 import random
 
 from collections import deque
@@ -89,15 +89,15 @@ if __name__ == "__main__":
                      help='Name of the environment (default: Pendulum-v0)')
     parser.add_argument('-f', "--frames", type=int, default=40000,
                      help='Number of training frames (default: 40000)')    
-    parser.add_argument("--eval_every", type=int, default=1000,
-                     help="Evaluate the current policy every X steps (default: 1000)")
-    parser.add_argument("--eval_runs", type=int, default=3,
+    parser.add_argument("--eval_every", type=int, default=5000,
+                     help="Evaluate the current policy every X steps (default: 5000)")
+    parser.add_argument("--eval_runs", type=int, default=2,
                      help="Number of evaluation runs to evaluate - averating the evaluation Performance over all runs (default: 3)")
     parser.add_argument('-mem', type=int, default=100000,
                      help='Replay buffer size (default: 100000)')
     parser.add_argument('-per', type=int, choices=[0,1],  default=0,
                      help='Use prioritized experience replay (default: False)')
-    parser.add_argument('-b', "--batch_size", type=int, default=128,
+    parser.add_argument('-b', "--batch_size", type=int, default=256,
                      help='Batch size (default: 128)')
     parser.add_argument('-nstep', type=int, default=1,
                      help='nstep_bootstrapping (default: 1)')
@@ -107,8 +107,8 @@ if __name__ == "__main__":
                      help='Neural Network layer size (default: 256)')
     parser.add_argument('-g', "--gamma", type=float, default=0.99,
                      help='Discount factor gamma (default: 0.99)')
-    parser.add_argument('-t', "--tau", type=float, default=0.01,
-                     help='Soft update factor tau (default: 0.01)')
+    parser.add_argument('-t', "--tau", type=float, default=0.005,
+                     help='Soft update factor tau (default: 0.005)')
     parser.add_argument('-lr', "--learning_rate", type=float, default=1e-3,
                      help='Learning rate (default: 1e-3)')
     parser.add_argument('-u', "--update_every", type=int, default=1,
